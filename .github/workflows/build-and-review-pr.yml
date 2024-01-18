@@ -1,0 +1,196 @@
+name: Build and Review PR
+run-name: 'Build and Review PR #${{ github.event.pull_request.number }}'
+
+on:
+  # https://docs.github.com/en/actions/security-guides/automatic-token-authentication#permissions-for-the-github_token
+  #
+  # This workflow uses the pull_request trigger which prevents write permissions on the
+  # GH_TOKEN and secrets access from public forks.  This should remain as a pull_request
+  # trigger to minimize the access public forks have in the repository.  The reduced
+  # permissions are adequate but do mean that re-compiles and readme changes will have to be
+  # made manually by the PR author.  These auto-updates could be done by this workflow
+  # for branches but in order to re-trigger a PR build (which is needed for status checks),
+  # we would make the commits with a different user and their PAT.  To minimize exposure
+  # and complication we will request those changes be manually made by the PR author.
+  pull_request:
+    types: [opened, synchronize, reopened]
+  # paths:
+  #   Do not include specific paths here.  We always want this build to run and produce a
+  #   status check which are branch protection rules can use.  If this is skipped because of
+  #   path filtering, a status check will not be created and we won't be able to merge the PR
+  #   without disabling that requirement.  If we have a status check that is always produced,
+  #   we can also use that to require all branches be up to date before they are merged.
+
+jobs:
+  build-and-review-pr:
+    # This reusable workflow will check to see if an action's source code has changed based on
+    # whether the PR includes files that match the files-with-code arg or are in one of the
+    # dirs-with-code directories.  If there are source code changes, this reusable workflow
+    # will then run the action's build (if one was provided) and update the README.md with the
+    # the latest version of the action.  If those two steps result in any changes that need to
+    # be committed, the workflow will fail because the PR needs some updates.  Instructions for
+    # updating the PR will be available in the build log, the workflow summary and as a PR
+    # comment if the PR came from a branch (not a fork).
+    # This workflow assumes:
+    #  - The main README.md is at the root of the repo
+    #  - The README contains a contribution guidelines and usage examples section
+    uses: Tech-Innovation/.github/.github/workflows/reusable-build-and-review-pr.yml@main
+    with:
+      action-name: ${{ github.repository }}
+      default-branch: main
+      readme-name: 'README.md'
+
+      # The id of the contribution guidelines section of the README.md
+      readme-contribution-id: '#contributing'
+
+      # The id of the usage examples section of the README.md
+      readme-examples-id: '#usage-examples'
+
+      # The files that contain source code for the action.  Only files that affect the action's execution
+      # should be included like action.yml or package.json.  Do not include files like README.md or .gitignore.
+      # Files do not need to be explicitly provided here if they fall under one of the dirs in dirs-with-code.
+      # ** This value must match the same files-with-code argument specified in increment-version-on-merge.yml.
+      files-with-code: 'action.yml,package.json,package-lock.json'
+
+      # The directories that contain source code for the action.  Only dirs with files that affect the action's
+      # execution should be included like src or dist.  Do not include dirs like .github or node_modules.
+      # ** This value must match the same dirs-with-code argument specified in increment-version-on-merge.yml.
+      dirs-with-code: 'src,dist'
+
+      # The npm script to run to build the action.  This is typically 'npm run build' if the
+      # action needs to be compiled.  For composite-run-steps actions this is typically empty.
+      build-command: 'npm run build'
+
+  pre-test:
+    runs-on: ubuntu-latest
+    env:
+      WORKFLOW_CONCLUSION: ''
+
+    steps:
+      - run: echo "This job will be successful!"
+
+      #--------------------------------------
+      # OUTCOME INCLUDES UNKNOWN CONCLUSION
+      #--------------------------------------
+      - name: '-------------------------------------------------------------------------------------------------------'
+        run: echo "WORKFLOW_CONCLUSION=''" >> $GITHUB_ENV
+
+      - uses: actions/checkout@v3
+
+      - name: When an unknown conclusion is present
+        uses: ./
+        if: always()
+        id: unknown
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          additional-conclusions: |
+            [
+              { "name": "dotnet test", "conclusion" : "it happened" },
+              { "name": "dotnet coverage", "conclusion" : "yep" }
+            ]
+          fallback-conclusion: aw-snap
+
+      - name: Then the outcome should be success
+        if: always()
+        run: ./test/assert-values-match.sh --name "step outcome" --expected "success" --actual "${{ steps.unknown.outcome }}"
+
+      - name: And outputs.workflow_conclusion and env.WORKFLOW_CONCLUSION should be the fallback value
+        if: always()
+        run: |
+          ./test/assert-values-match.sh --name "env.WORKFLOW_CONCLUSION" --expected "aw-snap" --actual "${{ env.WORKFLOW_CONCLUSION }}"
+          ./test/assert-values-match.sh --name "outputs.workflow_conclusion" --expected "aw-snap" --actual "${{ steps.unknown.outputs.workflow_conclusion }}"
+      
+      - name: '-------------------------------------------------------------------------------------------------------'
+        run: echo ""
+
+  test:
+    runs-on: ubuntu-latest
+    needs: [pre-test]
+
+    env:
+      WORKFLOW_CONCLUSION: ''
+
+    steps:
+      - uses: actions/checkout@v3
+
+      #--------------------------------------
+      # OUTCOME INCLUDES SUCCESS
+      #--------------------------------------
+      - name: '-------------------------------------------------------------------------------------------------------'
+        run: echo ""
+      - name: When a previous job runs successfully
+        uses: ./
+        if: always()
+        id: success
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Then the outcome should be success
+        if: always()
+        run: ./test/assert-values-match.sh --name "step outcome" --expected "success" --actual "${{ steps.success.outcome }}"
+
+      - name: And outputs.workflow_conclusion and env.WORKFLOW_CONCLUSION should be success
+        if: always()
+        run: |
+          ./test/assert-values-match.sh --name "env.WORKFLOW_CONCLUSION" --expected "success" --actual "${{ env.WORKFLOW_CONCLUSION }}"
+          ./test/assert-values-match.sh --name "outputs.workflow_conclusion" --expected "success" --actual "${{ steps.success.outputs.workflow_conclusion }}"
+
+      #--------------------------------------
+      # OUTCOME INCLUDES CANCELLED
+      #--------------------------------------
+      - name: '-------------------------------------------------------------------------------------------------------'
+        run: echo "WORKFLOW_CONCLUSION=''" >> $GITHUB_ENV
+
+      - name: When a cancel conclusion is present
+        uses: ./
+        if: always()
+        id: cancelled
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          additional-conclusions: |
+            [
+              { "name": "dotnet test", "conclusion" : "cancel" },
+              { "name": "dotnet coverage", "conclusion" : "failure" },
+              { "name": "jest test", "conclusion" : "success" }
+            ]
+
+      - name: Then the outcome should be success
+        if: always()
+        run: ./test/assert-values-match.sh --name "step outcome" --expected "success" --actual "${{ steps.cancelled.outcome }}"
+
+      - name: And outputs.workflow_conclusion and env.WORKFLOW_CONCLUSION should be cancelled
+        if: always()
+        run: |
+          ./test/assert-values-match.sh --name "env.WORKFLOW_CONCLUSION" --expected "cancelled" --actual "${{ env.WORKFLOW_CONCLUSION }}"
+          ./test/assert-values-match.sh --name "outputs.workflow_conclusion" --expected "cancelled" --actual "${{ steps.cancelled.outputs.workflow_conclusion }}"
+
+      #--------------------------------------
+      # OUTCOME INCLUDES FAILURE
+      #--------------------------------------
+      - name: '-------------------------------------------------------------------------------------------------------'
+        run: echo "WORKFLOW_CONCLUSION=''" >> $GITHUB_ENV
+
+      - name: When a failure conclusion is present
+        uses: ./
+        if: always()
+        id: failure
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          additional-conclusions: |
+            [
+              { "name": "dotnet test", "conclusion" : "failure" },
+              { "name": "jest test", "conclusion" : "success" }
+            ]
+
+      - name: Then the outcome should be success
+        if: always()
+        run: ./test/assert-values-match.sh --name "step outcome" --expected "success" --actual "${{ steps.failure.outcome }}"
+
+      - name: Then outputs.workflow_conclusion and env.WORKFLOW_CONCLUSION should be failure
+        if: always()
+        run: |
+          ./test/assert-values-match.sh --name "env.WORKFLOW_CONCLUSION" --expected "failure" --actual "${{ env.WORKFLOW_CONCLUSION }}"
+          ./test/assert-values-match.sh --name "outputs.workflow_conclusion" --expected "failure" --actual "${{ steps.failure.outputs.workflow_conclusion }}"
+
+      - name: '-------------------------------------------------------------------------------------------------------'
+        run: echo ""

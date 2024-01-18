@@ -1,0 +1,27 @@
+name: workflow-conclusion
+description: This action outputs the outcomes of jobs within the workflow.
+
+inputs:
+  github-token:
+    description: Secret GitHub API token to use for making API requests.
+    default: ${{ github.token }}
+    required: true
+  fallback-conclusion:
+    description: 'The fallback conclusion to use'
+    required: false
+    default: skipped
+  additional-conclusions:
+    description: 'A JSON-parseable array of additional conclusions to consider.'
+    required: false
+  suppress-fallback-warnings:
+    description: 'Whether to suppress warnings about the fallback conclusion.'
+    required: true
+    default: 'false'
+
+outputs:
+  workflow_conclusion:
+    description: Workflow conclusion
+
+runs:
+  using: 'node16'
+  main: 'dist/index.js' # Can also be a relative path to the js file you want executed
